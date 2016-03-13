@@ -8,9 +8,12 @@ static WNDPROC OriginaProcListView = NULL;
 bool UI_ENABLE = false;
 
 // first = dir, second = file
-std::vector<std::pair<std::string, std::string>> vListFile;
+std::list<std::pair<std::string, std::string>> vListFile;
 
 std::string fileSHA256(const char*  file);
+std::string memorySHA256(const char*  base, long size);
+
+bool createNewFile(const char*  file);
 
 BOOL CALLBACK DlgMain(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK WindowProcListView(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -24,6 +27,8 @@ bool proceeed(HWND hWnd);
 
 void getOptions(OPTIONS& op, HWND hWnd);
 
+LPBYTE OpenPEFile(const char* fileName);
+
 int MAIN()
 {
 	InitCommonControls();
@@ -32,7 +37,8 @@ int MAIN()
 	std::unique_ptr<ListView> viewFile(new ListView);
 	::viewFile = viewFile.get();
 
-	int res =  DialogBox(hInst, MAKEINTRESOURCE(DLG_MAIN), NULL, (DLGPROC)DlgMain);
+	int res;
+	res = DialogBox(hInst, MAKEINTRESOURCE(DLG_MAIN), NULL, (DLGPROC)DlgMain);
 
 	return res;
 }
@@ -98,7 +104,7 @@ LRESULT CALLBACK WindowProcListView(HWND hWnd,	UINT uMsg,	WPARAM wParam,	LPARAM 
 				viewFile->InsertItem(0, 0, fileName, MAX_PATH, 0);
 				viewFile->InsertItem(0, 1, fileSHA256(sItem).c_str(), MAX_PATH, 0);
 
-				vListFile.push_back(std::pair<std::string, std::string>("", sItem));
+				vListFile.push_front(std::pair<std::string, std::string>("", sItem));
 
 				UI_ENABLE = true;
 			}
@@ -222,45 +228,80 @@ bool proceeed(HWND hWnd)
 
 	srand(time(NULL));
 
-	std::unique_ptr<char> dataAdd(new char[opt.sizeByte]);
-
-	std::memset(static_cast<void*>(dataAdd.get()), 0, opt.sizeByte);
-
-	if (opt.addZero != true) {
-		for (int i = 0; i < opt.sizeByte; i++)
-		{
-			dataAdd.get()[i] = rand() % 255 + 1;
-		}
-	}
+	//std::unique_ptr<char> dataAdd(new char[opt.sizeByte]);
+	//std::memset(static_cast<void*>(dataAdd.get()), 0, opt.sizeByte);
 
 	std::fstream file;
 
 	std::string fileName;
 
-	for (size_t itemFile = 0; itemFile < vListFile.size(); ++itemFile) {
+	//for (size_t itemFile = 0; itemFile < vListFile.size(); ++itemFile) {
+	int indexINsert = 0;
+	for (auto &indexFile: vListFile)
+	{
 		fileName.clear();
 
-		if (vListFile[itemFile].first.length() <= 1) {
-			fileName = vListFile[itemFile].second;
+		if (indexFile.first.length() <= 1) {
+			fileName = indexFile.second;
 		}
 		else {
-			fileName = vListFile[itemFile].first;
+			fileName = indexFile.first;
 			fileName += "\\";
-			fileName += vListFile[itemFile].second;
+			fileName += indexFile.second;
 		}
 
 		if (opt.backup == true) {
 			CopyFileA(fileName.c_str(), (std::string(fileName) + ".bak").c_str(), true);
 		}
 
-		file.open(fileName, std::ios_base::binary | std::ios_base::app);
+		//createNewFile(fileName.c_str());
 
+		auto base = OpenPEFile(fileName.c_str());
+		if (base == NULL) { return -1; }
+		IMAGE_DOS_HEADER* dos_head = (IMAGE_DOS_HEADER*)base;
+		if (dos_head->e_magic != IMAGE_DOS_SIGNATURE) { UnmapViewOfFile(base);  return -1 ; }
+		IMAGE_NT_HEADERS* nt_head = (IMAGE_NT_HEADERS*)(base + dos_head->e_lfanew);
+		if (nt_head->Signature != IMAGE_NT_SIGNATURE) { UnmapViewOfFile(base); return -1; }
+		IMAGE_SECTION_HEADER* sect_head = IMAGE_FIRST_SECTION(nt_head);
+
+		struct f
+		{
+			int number;
+			DWORD pointRaw;
+		} minPointSect;
+		minPointSect.pointRaw = sect_head->PointerToRawData;
+		minPointSect.number = 1;
+		for (UINT i = 0; i < nt_head->FileHeader.NumberOfSections; i++, sect_head++) {
+			if (sect_head->PointerToRawData < minPointSect.pointRaw) {
+				minPointSect.pointRaw = sect_head->PointerToRawData;
+				minPointSect.number = i;
+			}
+		}
+
+		DWORD sizeAllSect = sizeof(IMAGE_SECTION_HEADER) * nt_head->FileHeader.NumberOfSections;
+		DWORD offsetSpace = sizeAllSect + nt_head->FileHeader.SizeOfOptionalHeader + 0x18 + dos_head->e_lfanew;
+		if (offsetSpace == minPointSect.pointRaw) { return -1; }
+		DWORD sizeSpace = nt_head->OptionalHeader.SizeOfHeaders - offsetSpace;
+		offsetSpace += 2;
+		*(base + offsetSpace) = 0x31;
+
+		int randomSize = rand() % sizeSpace - 1;
+
+		for (int i = 0; i < randomSize; i++)
+		{
+			*(base + offsetSpace + i) = rand() % 255 + 1;
+		}
+		
+		UnmapViewOfFile(base);
+
+		//file.open(fileName, std::ios_base::binary | std::ios_base::app);
+/*
 		if (file.is_open()) {
 			file.write(dataAdd.get(), opt.sizeByte);
 			file.close();
 		}
-
-		viewFile->InsertItem(itemFile, 2, fileSHA256(fileName.c_str()).c_str(), MAX_PATH, 0);
+*/
+		viewFile->InsertItem(indexINsert++, 2, fileSHA256(fileName.c_str()).c_str(), MAX_PATH, 0);
 	}
 
 	return 0;
@@ -270,6 +311,41 @@ void getOptions(OPTIONS& opt, HWND hWnd) {
 	opt.backup		= SendMessage(GetDlgItem(hWnd, GUI::BackUP), BM_GETSTATE, 0, 0);
 	opt.addZero		= SendMessage(GetDlgItem(hWnd, GUI::ADD_ZERO), BM_GETSTATE, 0, 0);
 	opt.sizeByte	= GetDlgItemInt(hWnd, GUI::SIZEADD, NULL, NULL);
+}
+
+LPBYTE OpenPEFile(const char* fileName)
+{
+	HANDLE hFile = CreateFile(fileName, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+	if (hFile == INVALID_HANDLE_VALUE) {
+		return NULL;
+	}
+
+	SYSTEMTIME st;
+	//GetLocalTime(&st);
+	GetSystemTime(&st);
+
+	FILETIME creationTime;
+	SystemTimeToFileTime(&st, &creationTime);
+
+	FILETIME lastAccessTime;
+	SystemTimeToFileTime(&st, &lastAccessTime);
+
+	FILETIME lastWriteTime;
+	SystemTimeToFileTime(&st, &lastWriteTime);
+
+	SetFileTime(hFile, &creationTime, &lastAccessTime, &lastWriteTime);
+
+	HANDLE hMapping = CreateFileMapping(hFile, NULL, PAGE_READWRITE, 0, 0, NULL);
+	CloseHandle(hFile);
+
+	LPBYTE pBase = NULL;
+	if (hMapping != NULL) {
+		pBase = (LPBYTE)MapViewOfFile(hMapping, FILE_MAP_WRITE, 0, 0, 0);
+		CloseHandle(hMapping);
+	}
+
+	return pBase;
 }
 
 void uiEnbale(HWND hWnd, bool b)
@@ -282,7 +358,6 @@ void uiEnbale(HWND hWnd, bool b)
 std::string fileSHA256(const char* FilePatch)
 {
 	std::ifstream file;
-
 	file.open(FilePatch, std::ios_base::binary);
 
 	if (file.is_open()) {
@@ -301,4 +376,40 @@ std::string fileSHA256(const char* FilePatch)
 		return sha256(buffer.get(), length);
 	}
 	return "Error:IO";
+}
+
+std::string memorySHA256(const char * base, long size)
+{
+	if(base == NULL) { return "Error:IO"; }
+
+	SHA256 sha256;
+	return sha256(base, size);
+}
+
+bool createNewFile(const char * filePatch)
+{
+	std::fstream file;
+	file.open(filePatch, std::ios_base::binary | std::ios_base::in);
+
+	if (file.is_open()) {
+		file.seekg(0, file.end);
+		size_t length = file.tellg();
+
+		file.seekg(0, file.beg);
+
+		std::unique_ptr<char> buffer(new char[length]);
+
+		file.read(buffer.get(), length);
+		file.close();
+
+		if (DeleteFile(filePatch) == 0) { return true; }
+
+		file.open(filePatch, std::ios_base::binary | std::ios_base::out);
+		if (file.is_open()) {
+			file.write(buffer.get(), length);
+			file.close();
+		}
+	}
+
+	return false;
 }

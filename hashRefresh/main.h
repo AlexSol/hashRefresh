@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <WinNT.h>
 #include <commctrl.h>
 #include <wincrypt.h>
 #include "resource.h"
@@ -9,6 +10,7 @@
 #include <fstream>
 #include <utility>
 #include <vector>
+#include <list>
 #include<ctime>
 
 #ifdef _DEBUG
